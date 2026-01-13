@@ -1,0 +1,5 @@
+{
+  "name": "TEI Annotator",
+  "description": "A specialized XML-TEI editor for correcting and adding annotations for Person, Place, and Name entities.",
+  "requestFramePermissions": []
+}
