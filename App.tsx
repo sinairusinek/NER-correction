@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, Download, FileText, CheckCircle, Circle, AlignLeft, AlignRight, AlertCircle, RefreshCcw, ChevronLeft, ChevronRight, Undo, RotateCcw, ScanSearch, ArrowRight, ArrowLeft, Layers, Sparkles, FileCode, CheckCheck, RotateCw } from 'lucide-react';
 import { EntityType, SelectionState } from './types';
-import { parseXML, serializeXML, wrapSelectionInTag, unwrapTag, createSampleTEI, getNodeByPath, getPages, PageInfo, replaceNode, acceptSuggestion, declineSuggestion, acceptAllSuggestionsInNode } from './utils/teiUtils';
+import { parseXML, serializeXML, wrapSelectionInTag, unwrapTag, createSampleTEI, getNodeByPath, getPages, PageInfo, replaceNode, acceptSuggestion, declineSuggestion, acceptAllSuggestionsInNode, updateNodeText } from './utils/teiUtils';
 import { XmlNodeRenderer } from './components/TeiRenderer';
 import { FloatingMenu } from './components/FloatingMenu';
 import { autoAnnotateText, reviewXmlFragment } from './services/geminiService';
@@ -25,11 +25,12 @@ function App() {
   const [suggestions, setSuggestions] = useState<Element[]>([]);
   const [currentSuggestionIndex, setCurrentSuggestionIndex] = useState<number>(-1);
   const [reviewComplete, setReviewComplete] = useState(false);
+  
+  const [editingPath, setEditingPath] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const mainContentRef = useRef<HTMLElement>(null);
 
-  // Pagination and Suggestion calculation
   useEffect(() => {
     if (xmlDoc) {
       const detectedPages = getPages(xmlDoc);
@@ -53,7 +54,6 @@ function App() {
     }
   }, [xmlDoc]);
 
-  // Scroll logic
   useEffect(() => {
     if (mainContentRef.current) {
       mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
@@ -149,41 +149,60 @@ function App() {
 
   const handleSelection = useCallback(() => {
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-      setSelectionState(null);
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed || editingPath) {
+      if (!editingPath) setSelectionState(null);
       return;
     }
     const range = selection.getRangeAt(0);
     const container = range.commonAncestorContainer;
     
-    // Check if selection is within an fw tag
     let parent: Node | null = container;
+    let isInsideEntity = false;
     while (parent) {
-      if (parent.nodeType === Node.ELEMENT_NODE && (parent as Element).tagName.toLowerCase() === 'fw') {
-        setSelectionState(null);
-        return;
+      if (parent.nodeType === Node.ELEMENT_NODE) {
+        const el = parent as Element;
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'fw') {
+          setSelectionState(null);
+          return;
+        }
+        if (['persname', 'placename', 'name'].includes(tag)) {
+          isInsideEntity = true;
+        }
       }
       parent = parent.parentNode;
     }
 
-    let targetEl: HTMLElement | null = container.nodeType === Node.TEXT_NODE ? container.parentElement : container as HTMLElement;
+    let targetEl: HTMLElement | null = null;
+    if (container.nodeType === Node.TEXT_NODE) {
+        // We want the path of the text node itself
+        // But our renderer puts teipath on the wrapper spans
+        targetEl = container.parentElement;
+    } else {
+        targetEl = container as HTMLElement;
+    }
+
     while (targetEl && !targetEl.getAttribute('data-teipath')) {
       targetEl = targetEl.parentElement;
     }
+    
     if (!targetEl) {
       setSelectionState(null);
       return;
     }
+
     const path = targetEl.getAttribute('data-teipath');
     if (!path) return;
+
     setSelectionState({
       text: selection.toString(),
       path: path,
       startOffset: range.startOffset,
       endOffset: range.endOffset,
-      rect: range.getBoundingClientRect()
+      rect: range.getBoundingClientRect(),
+      isInsideEntity
     });
-  }, []);
+  }, [editingPath]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -207,6 +226,11 @@ function App() {
     if (action === 'unwrap') newDoc = unwrapTag(xmlDoc, path);
     else if (action === 'acceptSuggestion') newDoc = acceptSuggestion(xmlDoc, path, payload);
     else if (action === 'declineSuggestion') newDoc = declineSuggestion(xmlDoc, path);
+    else if (action === 'startEdit') setEditingPath(path);
+    else if (action === 'updateText') {
+        newDoc = updateNodeText(xmlDoc, path, payload as string);
+        setEditingPath(null);
+    }
     if (newDoc) updateXmlDoc(newDoc);
   };
 
@@ -234,20 +258,32 @@ function App() {
         return;
       }
       const docClone = xmlDoc.cloneNode(true) as Document;
-      const textNode = getNodeByPath(docClone, selectionState.path) as Text;
-      const parent = textNode?.parentNode;
-      if (parent && textNode) {
-          const originalText = textNode.textContent || "";
-          const before = originalText.substring(0, selectionState.startOffset);
-          const after = originalText.substring(selectionState.endOffset);
-          const fragmentWrapper = parseXML(`<root>${annotatedFragment}</root>`);
-          const newNodes = Array.from(fragmentWrapper.documentElement.childNodes);
-          const fragment = docClone.createDocumentFragment();
-          if (before) fragment.appendChild(docClone.createTextNode(before));
-          newNodes.forEach(n => fragment.appendChild(docClone.importNode(n, true)));
-          if (after) fragment.appendChild(docClone.createTextNode(after));
-          parent.replaceChild(fragment, textNode);
-          updateXmlDoc(docClone);
+      const targetNode = getNodeByPath(docClone, selectionState.path);
+      
+      if (targetNode) {
+          const parent = targetNode.parentNode;
+          if (parent) {
+              const originalText = targetNode.textContent || "";
+              const before = originalText.substring(0, selectionState.startOffset);
+              const after = originalText.substring(selectionState.endOffset);
+              
+              const fragmentWrapper = parseXML(`<root>${annotatedFragment}</root>`);
+              const newNodes = Array.from(fragmentWrapper.documentElement.childNodes);
+              const fragment = docClone.createDocumentFragment();
+              
+              if (before) fragment.appendChild(docClone.createTextNode(before));
+              newNodes.forEach(n => fragment.appendChild(docClone.importNode(n, true)));
+              if (after) fragment.appendChild(docClone.createTextNode(after));
+              
+              if (targetNode.nodeType === Node.TEXT_NODE) {
+                  parent.replaceChild(fragment, targetNode);
+              } else {
+                  // If it's an element, we probably meant to replace its content
+                  targetNode.textContent = '';
+                  targetNode.appendChild(fragment);
+              }
+              updateXmlDoc(docClone);
+          }
       }
     } catch (e: any) {
       setErrorMsg(e?.message || "Failed to auto-annotate.");
@@ -313,16 +349,15 @@ function App() {
               </div>
             </div>
             <h1 className="text-4xl font-extrabold tracking-tight mb-2">TEI Annotator</h1>
-            <p className="text-blue-100 text-lg font-medium opacity-90">Specialized XML-TEI Review & Annotation Environment</p>
+            <p className="text-blue-100 text-lg font-medium opacity-90">Advanced XML-TEI Review & Typo Correction</p>
           </div>
           
           <div className="p-12 space-y-8">
             <div className="space-y-4">
-              <h2 className="text-2xl font-bold text-slate-800">Welcome to the Workspace</h2>
+              <h2 className="text-2xl font-bold text-slate-800">Ready to Annotate</h2>
               <p className="text-slate-500 leading-relaxed">
-                Upload your TEI XML documents to begin correcting annotations. 
-                Our AI-assisted review detects missing Person, Place, and Name entities 
-                while following strict cultural and textual rules for Hebrew historical scripts.
+                Correct annotations, fix typos, and create nested entities 
+                (like a <code>placeName</code> inside a <code>persName</code>).
               </p>
             </div>
 
@@ -340,21 +375,6 @@ function App() {
                 <Sparkles size={32} className="text-slate-400 group-hover:text-amber-500 transition-colors" />
                 <span className="font-bold text-slate-700 group-hover:text-amber-700">Try with Sample</span>
               </button>
-            </div>
-            
-            <div className="pt-4 border-t border-slate-100 text-center">
-              <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">Capabilities</p>
-              <div className="mt-4 flex flex-wrap justify-center gap-4">
-                 <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-full text-xs font-semibold text-slate-600">
-                    <CheckCircle size={12} className="text-emerald-500" /> AI Error Detection
-                 </div>
-                 <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-full text-xs font-semibold text-slate-600">
-                    <CheckCircle size={12} className="text-emerald-500" /> Manual Selection
-                 </div>
-                 <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-full text-xs font-semibold text-slate-600">
-                    <CheckCircle size={12} className="text-emerald-500" /> TEI Export
-                 </div>
-              </div>
             </div>
           </div>
         </div>
@@ -384,24 +404,8 @@ function App() {
           </button>
 
           <div className="flex bg-slate-100 p-1 rounded-md gap-1">
-            <button 
-              onClick={() => handleReview('page')}
-              disabled={isProcessing || pages.length === 0}
-              className="flex items-center gap-2 px-3 py-1.5 hover:bg-white hover:shadow-sm text-slate-700 rounded transition-all text-xs font-semibold disabled:opacity-50"
-              title="Review current page"
-            >
-              <ScanSearch size={14} />
-              <span>Review Page</span>
-            </button>
-            <button 
-              onClick={() => handleReview('document')}
-              disabled={isProcessing || reviewComplete}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all text-xs font-semibold disabled:opacity-50 ${reviewComplete ? 'text-slate-400' : 'hover:bg-white hover:shadow-sm text-purple-700'}`}
-              title="Review entire document"
-            >
-              <Layers size={14} />
-              <span>Review All</span>
-            </button>
+            <button onClick={() => handleReview('page')} disabled={isProcessing} className="flex items-center gap-2 px-3 py-1.5 hover:bg-white hover:shadow-sm text-slate-700 rounded transition-all text-xs font-semibold disabled:opacity-50"><ScanSearch size={14} /><span>Review Page</span></button>
+            <button onClick={() => handleReview('document')} disabled={isProcessing || reviewComplete} className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all text-xs font-semibold disabled:opacity-50 ${reviewComplete ? 'text-slate-400' : 'hover:bg-white hover:shadow-sm text-purple-700'}`}><Layers size={14} /><span>Review All</span></button>
           </div>
 
           <label className="flex items-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md cursor-pointer text-sm font-medium">
@@ -424,32 +428,18 @@ function App() {
              <div className="flex items-center gap-4">
                  <div className="flex items-center gap-2 text-sm font-medium">
                      <AlertCircle size={16} className="text-amber-400" />
-                     {suggestions.length} suggestions found
+                     {suggestions.length} suggestions
                  </div>
                  <div className="flex items-center gap-1">
                      <button onClick={() => setCurrentSuggestionIndex(p => (p - 1 + suggestions.length) % suggestions.length)} className="p-1 hover:bg-slate-700 rounded transition-colors"><ArrowLeft size={16} /></button>
                      <span className="text-xs text-slate-400 w-16 text-center font-mono">{currentSuggestionIndex + 1} / {suggestions.length}</span>
                      <button onClick={() => setCurrentSuggestionIndex(p => (p + 1) % suggestions.length)} className="p-1 hover:bg-slate-700 rounded transition-colors"><ArrowRight size={16} /></button>
                  </div>
-                 <div className="h-4 w-px bg-slate-600"></div>
                  <div className="flex items-center gap-2">
-                    <button 
-                      onClick={() => handleAcceptAll('page')}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold transition-all shadow-lg active:scale-95"
-                    >
-                      <CheckCheck size={14} />
-                      Accept Page
-                    </button>
-                    <button 
-                      onClick={() => handleAcceptAll('document')}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold transition-all shadow-lg active:scale-95"
-                    >
-                      <Layers size={14} />
-                      Accept Full
-                    </button>
+                    <button onClick={() => handleAcceptAll('page')} className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 rounded text-xs font-bold transition-all shadow-lg active:scale-95">Accept Page</button>
                  </div>
              </div>
-             <div className="text-[10px] text-slate-400 uppercase tracking-widest font-bold hidden md:block">Highlights: Green (Add), Yellow (Fix), Red (Remove)</div>
+             <div className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Double-click text to fix typos</div>
          </div>
       )}
 
@@ -457,19 +447,15 @@ function App() {
         {pages.length > 0 && (
           <aside className="w-64 bg-white border-e border-slate-200 flex flex-col shrink-0 z-20 overflow-y-auto">
             <div className="p-4 border-b bg-slate-50/50 flex items-center justify-between">
-              <h3 className="font-semibold text-slate-700 text-xs uppercase">Navigation ({pages.length})</h3>
+              <h3 className="font-semibold text-slate-700 text-xs uppercase">Navigation</h3>
             </div>
             <div className="p-2 space-y-1">
-              {pages.map((page, idx) => {
-                const isDone = !!pageStatus[page.id];
-                const isActive = idx === activePageIndex;
-                return (
-                  <div key={page.id} className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-all ${isActive ? 'bg-blue-50 border-blue-100 shadow-sm' : 'hover:bg-slate-50'}`} onClick={() => setActivePageIndex(idx)}>
-                     <button onClick={(e) => { e.stopPropagation(); togglePageStatus(page.id); }} className={`${isDone ? 'text-green-500' : 'text-slate-300'} transition-colors hover:text-green-400`}>{isDone ? <CheckCircle size={18} /> : <Circle size={18} />}</button>
-                     <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700'}`}>{page.id}</p>
-                  </div>
-                );
-              })}
+              {pages.map((page, idx) => (
+                <div key={page.id} className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-all ${idx === activePageIndex ? 'bg-blue-50 border-blue-100 shadow-sm' : 'hover:bg-slate-50'}`} onClick={() => setActivePageIndex(idx)}>
+                   <button onClick={(e) => { e.stopPropagation(); togglePageStatus(page.id); }} className={`${!!pageStatus[page.id] ? 'text-green-500' : 'text-slate-300'} transition-colors hover:text-green-400`}>{!!pageStatus[page.id] ? <CheckCircle size={18} /> : <Circle size={18} />}</button>
+                   <p className={`text-sm font-medium truncate ${idx === activePageIndex ? 'text-blue-700' : 'text-slate-700'}`}>{page.id}</p>
+                </div>
+              ))}
             </div>
           </aside>
         )}
@@ -481,17 +467,11 @@ function App() {
                   <div className="flex gap-3">
                     <AlertCircle className="shrink-0 mt-0.5" size={20} />
                     <div className="text-sm">
-                      <p className="font-bold">AI Processing Encountered an Error</p>
+                      <p className="font-bold">Error</p>
                       <p className="opacity-90">{errorMsg}</p>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => handleReview('page')}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded font-bold text-xs transition-colors shrink-0"
-                  >
-                    <RotateCw size={14} />
-                    Retry Page
-                  </button>
+                  <button onClick={() => handleReview('page')} className="flex items-center gap-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded font-bold text-xs transition-colors shrink-0"><RotateCw size={14} />Retry</button>
               </div>
             )}
             <div ref={containerRef} className={`relative font-serif text-lg leading-relaxed text-slate-800 ${direction === 'rtl' ? 'text-right' : 'text-left'} flex-1`}>
@@ -500,11 +480,11 @@ function App() {
                     <div className="absolute top-4 end-4 flex items-center gap-2">
                       <button onClick={handleResetPage} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors" title="Reset Page"><RotateCcw size={16} /></button>
                     </div>
-                    <XmlNodeRenderer node={pages[activePageIndex].node} path={pages[activePageIndex].path} onAction={handleAction} />
+                    <XmlNodeRenderer node={pages[activePageIndex].node} path={pages[activePageIndex].path} onAction={handleAction} editingPath={editingPath} />
                 </div>
               ) : xmlDoc ? (
                 <div className="bg-white shadow-lg p-12 min-h-screen rounded-sm border border-slate-200">
-                  <XmlNodeRenderer node={xmlDoc.documentElement} path="" onAction={handleAction} />
+                  <XmlNodeRenderer node={xmlDoc.documentElement} path="" onAction={handleAction} editingPath={editingPath} />
                 </div>
               ) : (
                 <div className="text-center py-20 text-slate-400">Ready for file input.</div>
@@ -521,11 +501,11 @@ function App() {
         </main>
       </div>
 
-      <FloatingMenu selection={selectionState} onTag={handleApplyTag} onAutoTag={handleAutoTagSelection} isAutoTagging={isProcessing} />
+      <FloatingMenu selection={selectionState} onTag={handleApplyTag} onAutoTag={handleAutoTagSelection} onStartEdit={() => selectionState && handleAction('startEdit', selectionState.path)} isAutoTagging={isProcessing} />
       {isProcessing && (
         <div className="fixed bottom-8 right-8 bg-white border border-slate-200 shadow-2xl rounded-lg p-4 flex items-center gap-3 z-50 animate-in slide-in-from-bottom-5">
             <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-            <span className="text-sm font-bold text-slate-700">AI Analyst is working...</span>
+            <span className="text-sm font-bold text-slate-700">AI Analyst working...</span>
         </div>
       )}
     </div>

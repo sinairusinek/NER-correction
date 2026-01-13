@@ -10,10 +10,12 @@ export interface SelectionState {
   startOffset: number;
   endOffset: number;
   rect: DOMRect | null;
+  isInsideEntity?: boolean;
 }
 
 export interface XmlNodeProps {
   node: Node;
   path: string;
   onAction: (action: string, path: string, payload?: any) => void;
+  editingPath?: string | null;
 }

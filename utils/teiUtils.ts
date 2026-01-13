@@ -35,33 +35,49 @@ export const wrapSelectionInTag = (
   const newDoc = doc.cloneNode(true) as Document;
   const targetNode = getNodeByPath(newDoc, path);
 
-  if (!targetNode || targetNode.nodeType !== Node.TEXT_NODE) {
-    return doc;
-  }
+  if (!targetNode) return doc;
 
-  const textNode = targetNode as Text;
-  const textContent = textNode.textContent || "";
+  // If it's a text node, we split it
+  if (targetNode.nodeType === Node.TEXT_NODE) {
+    const textNode = targetNode as Text;
+    const textContent = textNode.textContent || "";
+    
+    const beforeText = textContent.substring(0, startOffset);
+    const selectedText = textContent.substring(startOffset, endOffset);
+    const afterText = textContent.substring(endOffset);
+
+    const parent = textNode.parentNode;
+    if (!parent) return doc;
+
+    const newElement = newDoc.createElement(tagName);
+    newElement.textContent = selectedText;
+
+    if (afterText) {
+      parent.insertBefore(newDoc.createTextNode(afterText), textNode.nextSibling);
+    }
+    
+    parent.replaceChild(newElement, textNode);
+
+    if (beforeText) {
+      parent.insertBefore(newDoc.createTextNode(beforeText), newElement);
+    }
+    
+    return newDoc;
+  } 
   
-  const beforeText = textContent.substring(0, startOffset);
-  const selectedText = textContent.substring(startOffset, endOffset);
-  const afterText = textContent.substring(endOffset);
+  return doc;
+};
 
-  const parent = textNode.parentNode;
-  if (!parent) return doc;
-
-  if (beforeText) {
-    parent.insertBefore(newDoc.createTextNode(beforeText), textNode);
+export const updateNodeText = (doc: Document, path: string, newText: string): Document => {
+  const newDoc = doc.cloneNode(true) as Document;
+  const targetNode = getNodeByPath(newDoc, path);
+  
+  if (targetNode && (targetNode.nodeType === Node.TEXT_NODE || targetNode.nodeType === Node.ELEMENT_NODE)) {
+    targetNode.textContent = newText;
+    if (targetNode.parentNode) {
+       targetNode.parentNode.normalize();
+    }
   }
-
-  const newElement = newDoc.createElement(tagName);
-  newElement.textContent = selectedText;
-  parent.insertBefore(newElement, textNode);
-
-  if (afterText) {
-    parent.insertBefore(newDoc.createTextNode(afterText), textNode);
-  }
-
-  parent.removeChild(textNode);
   return newDoc;
 };
 
@@ -108,12 +124,34 @@ export const acceptSuggestion = (doc: Document, path: string, payload: { mode: s
   const { mode, type } = payload;
 
   if (mode === 'deletion') {
-    const text = targetNode.textContent || "";
-    const textNode = newDoc.createTextNode(text);
-    parent.replaceChild(textNode, targetNode);
+    // If accepting a deletion, we also want to remove any entity tags that were inside the suggestion
+    // as those are the tags the AI is suggesting to remove.
+    const children = Array.from(targetNode.childNodes);
+    children.forEach(child => {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const el = child as Element;
+        const tag = el.tagName.toLowerCase();
+        if (tag === 'persname' || tag === 'placename' || tag === 'name') {
+          // Unwrap the entity tag to leave its text content
+          while (el.firstChild) {
+            targetNode.insertBefore(el.firstChild, el);
+          }
+          targetNode.removeChild(el);
+        }
+      }
+    });
+
+    // Now unwrap the suggestion wrapper itself
+    while (targetNode.firstChild) {
+      parent.insertBefore(targetNode.firstChild, targetNode);
+    }
+    parent.removeChild(targetNode);
   } else {
     const newElement = newDoc.createElement(type);
-    newElement.textContent = targetNode.textContent;
+    // Move all children from suggestion to the new element to preserve nested tags
+    while (targetNode.firstChild) {
+      newElement.appendChild(targetNode.firstChild);
+    }
     parent.replaceChild(newElement, targetNode);
   }
 
@@ -125,8 +163,6 @@ export const acceptAllSuggestionsInNode = (doc: Document, targetNode: Node): voi
   if (targetNode.nodeType !== Node.ELEMENT_NODE) return;
   const element = targetNode as Element;
   
-  // Get all suggestions inside this node
-  // We use querySelectorAll and iterate backwards to avoid issues with DOM changes
   const suggestions = Array.from(element.querySelectorAll('suggestion'));
   
   for (let i = suggestions.length - 1; i >= 0; i--) {
@@ -137,11 +173,31 @@ export const acceptAllSuggestionsInNode = (doc: Document, targetNode: Node): voi
     if (!parent) continue;
 
     if (mode === 'deletion') {
-      const textNode = doc.createTextNode(s.textContent || "");
-      parent.replaceChild(textNode, s);
+      // Remove entity tags inside the suggestion first
+      const children = Array.from(s.childNodes);
+      children.forEach(child => {
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          const el = child as Element;
+          const tag = el.tagName.toLowerCase();
+          if (tag === 'persname' || tag === 'placename' || tag === 'name') {
+            while (el.firstChild) {
+              s.insertBefore(el.firstChild, el);
+            }
+            s.removeChild(el);
+          }
+        }
+      });
+
+      // Unwrap suggestion
+      while (s.firstChild) {
+        parent.insertBefore(s.firstChild, s);
+      }
+      parent.removeChild(s);
     } else {
       const newEl = doc.createElement(type);
-      newEl.textContent = s.textContent;
+      while (s.firstChild) {
+        newEl.appendChild(s.firstChild);
+      }
       parent.replaceChild(newEl, s);
     }
   }
@@ -215,6 +271,7 @@ export const createSampleTEI = (): string => {
         <p>
           שמעתי מפי ר׳ <persName>יצחק</persName> שגר ב<placeName>פראנקפורט דמיין</placeName>.
           הוא אמר ש<name>ישראל</name> הם עם קדוש לה׳.
+          דוגמה לקינון: <persName>ר׳ <persName>משה</persName> מ<placeName>קורדוברו</placeName></persName>.
         </p>
       </div>
     </body>
