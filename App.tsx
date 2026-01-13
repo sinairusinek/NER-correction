@@ -1,30 +1,27 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Upload, Download, FileText, CheckCircle, Circle, AlignLeft, AlignRight, AlertCircle, RefreshCcw, ChevronLeft, ChevronRight, Undo, RotateCcw, ScanSearch, ArrowRight, ArrowLeft, Check, X, Layers } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { Upload, Download, FileText, CheckCircle, Circle, AlignLeft, AlignRight, AlertCircle, RefreshCcw, ChevronLeft, ChevronRight, Undo, RotateCcw, ScanSearch, ArrowRight, ArrowLeft, Layers, Sparkles, FileCode, CheckCheck, RotateCw } from 'lucide-react';
 import { EntityType, SelectionState } from './types';
-import { parseXML, serializeXML, wrapSelectionInTag, unwrapTag, createSampleTEI, getNodeByPath, getPages, PageInfo, replaceNode, acceptSuggestion, declineSuggestion } from './utils/teiUtils';
+import { parseXML, serializeXML, wrapSelectionInTag, unwrapTag, createSampleTEI, getNodeByPath, getPages, PageInfo, replaceNode, acceptSuggestion, declineSuggestion, acceptAllSuggestionsInNode } from './utils/teiUtils';
 import { XmlNodeRenderer } from './components/TeiRenderer';
 import { FloatingMenu } from './components/FloatingMenu';
 import { autoAnnotateText, reviewXmlFragment } from './services/geminiService';
 
 function App() {
   const [xmlDoc, setXmlDoc] = useState<Document | null>(null);
-  const [fileName, setFileName] = useState<string>("document.xml");
+  const [fileName, setFileName] = useState<string>("");
   const [selectionState, setSelectionState] = useState<SelectionState | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [direction, setDirection] = useState<'rtl' | 'ltr'>('rtl');
   
-  // Undo History
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [originalDoc, setOriginalDoc] = useState<string | null>(null);
 
-  // Pagination State
   const [pages, setPages] = useState<PageInfo[]>([]);
   const [activePageIndex, setActivePageIndex] = useState<number>(0);
   const [pageStatus, setPageStatus] = useState<Record<string, boolean>>({});
 
-  // Review Mode State
   const [suggestions, setSuggestions] = useState<Element[]>([]);
   const [currentSuggestionIndex, setCurrentSuggestionIndex] = useState<number>(-1);
   const [reviewComplete, setReviewComplete] = useState(false);
@@ -32,16 +29,7 @@ function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const mainContentRef = useRef<HTMLElement>(null);
 
-  // Initialize with sample
-  useEffect(() => {
-    const initialXml = createSampleTEI();
-    const doc = parseXML(initialXml);
-    setXmlDoc(doc);
-    setOriginalDoc(initialXml);
-    addToHistory(initialXml);
-  }, []);
-
-  // Recalculate pages when xmlDoc changes
+  // Pagination and Suggestion calculation
   useEffect(() => {
     if (xmlDoc) {
       const detectedPages = getPages(xmlDoc);
@@ -53,6 +41,7 @@ function App() {
 
       const suggestionNodes = Array.from(xmlDoc.getElementsByTagName('suggestion'));
       setSuggestions(suggestionNodes);
+      
       if (suggestionNodes.length > 0 && currentSuggestionIndex === -1) {
           setCurrentSuggestionIndex(0);
       } else if (suggestionNodes.length === 0) {
@@ -64,6 +53,7 @@ function App() {
     }
   }, [xmlDoc]);
 
+  // Scroll logic
   useEffect(() => {
     if (mainContentRef.current) {
       mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
@@ -92,6 +82,11 @@ function App() {
     const serialized = serializeXML(newDoc);
     setXmlDoc(newDoc);
     addToHistory(serialized);
+    setReviewComplete(false);
+  };
+
+  const togglePageStatus = (pageId: string) => {
+    setPageStatus(prev => ({ ...prev, [pageId]: !prev[pageId] }));
   };
 
   const handleUndo = () => {
@@ -129,6 +124,7 @@ function App() {
           setPageStatus({});
           setErrorMsg(null);
           setReviewComplete(false);
+          setActivePageIndex(0);
         } catch (err) {
           setErrorMsg("Failed to parse XML file. Please ensure it is valid XML.");
         }
@@ -144,7 +140,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = fileName.replace('.xml', '_annotated.xml');
+    a.download = (fileName || 'document').replace('.xml', '') + '_annotated.xml';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -159,6 +155,17 @@ function App() {
     }
     const range = selection.getRangeAt(0);
     const container = range.commonAncestorContainer;
+    
+    // Check if selection is within an fw tag
+    let parent: Node | null = container;
+    while (parent) {
+      if (parent.nodeType === Node.ELEMENT_NODE && (parent as Element).tagName.toLowerCase() === 'fw') {
+        setSelectionState(null);
+        return;
+      }
+      parent = parent.parentNode;
+    }
+
     let targetEl: HTMLElement | null = container.nodeType === Node.TEXT_NODE ? container.parentElement : container as HTMLElement;
     while (targetEl && !targetEl.getAttribute('data-teipath')) {
       targetEl = targetEl.parentElement;
@@ -201,6 +208,18 @@ function App() {
     else if (action === 'acceptSuggestion') newDoc = acceptSuggestion(xmlDoc, path, payload);
     else if (action === 'declineSuggestion') newDoc = declineSuggestion(xmlDoc, path);
     if (newDoc) updateXmlDoc(newDoc);
+  };
+
+  const handleAcceptAll = (scope: 'page' | 'document') => {
+    if (!xmlDoc) return;
+    const docClone = xmlDoc.cloneNode(true) as Document;
+    if (scope === 'page' && pages[activePageIndex]) {
+      const nodeInClone = getNodeByPath(docClone, pages[activePageIndex].path);
+      if (nodeInClone) acceptAllSuggestionsInNode(docClone, nodeInClone);
+    } else {
+      acceptAllSuggestionsInNode(docClone, docClone.documentElement);
+    }
+    updateXmlDoc(docClone);
   };
 
   const handleAutoTagSelection = async () => {
@@ -250,7 +269,8 @@ function App() {
        
        try {
            const reviewedDom = parseXML(reviewedXml);
-           if (reviewedDom.querySelector('parsererror')) throw new Error("AI returned invalid XML structure.");
+           const parserError = reviewedDom.querySelector('parsererror');
+           if (parserError) throw new Error(`AI returned invalid XML structure.`);
            
            if (isFull) {
                updateXmlDoc(reviewedDom);
@@ -260,7 +280,7 @@ function App() {
                updateXmlDoc(newDoc);
            }
        } catch (parseErr: any) {
-           setErrorMsg(`Parsing Error: ${parseErr.message}. The AI response was malformed.`);
+           setErrorMsg(`Parsing Error: ${parseErr.message}. The AI response contained invalid XML syntax.`);
        }
      } catch (e: any) {
        setErrorMsg(e?.message || "Review failed.");
@@ -269,15 +289,86 @@ function App() {
      }
   };
 
-  const togglePageStatus = (pageId: string) => {
-    setPageStatus(prev => ({ ...prev, [pageId]: !prev[pageId] }));
+  const loadSample = () => {
+    const s = createSampleTEI();
+    const doc = parseXML(s);
+    setXmlDoc(doc);
+    setFileName("sample_hebrew.xml");
+    setOriginalDoc(s);
+    setHistory([s]);
+    setHistoryIndex(0);
+    setPageStatus({});
+    setReviewComplete(false);
+    setActivePageIndex(0);
   };
+
+  if (!xmlDoc) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in duration-500">
+          <div className="bg-blue-600 p-12 text-white">
+            <div className="flex justify-center mb-6">
+              <div className="bg-white/20 p-4 rounded-full backdrop-blur-md">
+                <FileCode size={48} />
+              </div>
+            </div>
+            <h1 className="text-4xl font-extrabold tracking-tight mb-2">TEI Annotator</h1>
+            <p className="text-blue-100 text-lg font-medium opacity-90">Specialized XML-TEI Review & Annotation Environment</p>
+          </div>
+          
+          <div className="p-12 space-y-8">
+            <div className="space-y-4">
+              <h2 className="text-2xl font-bold text-slate-800">Welcome to the Workspace</h2>
+              <p className="text-slate-500 leading-relaxed">
+                Upload your TEI XML documents to begin correcting annotations. 
+                Our AI-assisted review detects missing Person, Place, and Name entities 
+                while following strict cultural and textual rules for Hebrew historical scripts.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label className="flex flex-col items-center gap-3 p-8 border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/50 rounded-xl cursor-pointer transition-all group">
+                <Upload size={32} className="text-slate-400 group-hover:text-blue-500 transition-colors" />
+                <span className="font-bold text-slate-700 group-hover:text-blue-700">Upload XML</span>
+                <input type="file" accept=".xml" onChange={handleFileUpload} className="hidden" />
+              </label>
+
+              <button 
+                onClick={loadSample}
+                className="flex flex-col items-center gap-3 p-8 border border-slate-200 hover:border-amber-400 hover:bg-amber-50/50 rounded-xl transition-all group"
+              >
+                <Sparkles size={32} className="text-slate-400 group-hover:text-amber-500 transition-colors" />
+                <span className="font-bold text-slate-700 group-hover:text-amber-700">Try with Sample</span>
+              </button>
+            </div>
+            
+            <div className="pt-4 border-t border-slate-100 text-center">
+              <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">Capabilities</p>
+              <div className="mt-4 flex flex-wrap justify-center gap-4">
+                 <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-full text-xs font-semibold text-slate-600">
+                    <CheckCircle size={12} className="text-emerald-500" /> AI Error Detection
+                 </div>
+                 <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-full text-xs font-semibold text-slate-600">
+                    <CheckCircle size={12} className="text-emerald-500" /> Manual Selection
+                 </div>
+                 <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-100 rounded-full text-xs font-semibold text-slate-600">
+                    <CheckCircle size={12} className="text-emerald-500" /> TEI Export
+                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div dir={direction} className="flex flex-col h-screen bg-slate-50 text-slate-900">
       <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm sticky top-0 z-30 shrink-0">
         <div className="flex items-center gap-3">
-          <div className="bg-blue-600 p-2 rounded-lg text-white"><FileText size={24} /></div>
+          <button onClick={() => setXmlDoc(null)} className="bg-blue-600 p-2 rounded-lg text-white hover:bg-blue-700 transition-colors" title="Back to Welcome">
+            <FileText size={24} />
+          </button>
           <div>
             <h1 className="text-xl font-bold text-slate-800 tracking-tight">TEI Annotator</h1>
             <p className="text-xs text-slate-500 font-medium">{fileName}</p>
@@ -285,7 +376,7 @@ function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          <button onClick={handleUndo} disabled={historyIndex <= 0} className="p-2 text-slate-600 hover:text-slate-900 disabled:opacity-30"><Undo size={18} /></button>
+          <button onClick={handleUndo} disabled={historyIndex <= 0} className="p-2 text-slate-600 hover:text-slate-900 disabled:opacity-30" title="Undo"><Undo size={18} /></button>
 
           <button onClick={() => setDirection(prev => prev === 'rtl' ? 'ltr' : 'rtl')} className="flex items-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md transition-colors text-sm font-medium">
             {direction === 'rtl' ? <AlignRight size={16} /> : <AlignLeft size={16} />}
@@ -297,15 +388,15 @@ function App() {
               onClick={() => handleReview('page')}
               disabled={isProcessing || pages.length === 0}
               className="flex items-center gap-2 px-3 py-1.5 hover:bg-white hover:shadow-sm text-slate-700 rounded transition-all text-xs font-semibold disabled:opacity-50"
-              title="Review current page only"
+              title="Review current page"
             >
-              <FileText size={14} />
+              <ScanSearch size={14} />
               <span>Review Page</span>
             </button>
             <button 
               onClick={() => handleReview('document')}
               disabled={isProcessing || reviewComplete}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all text-xs font-semibold disabled:opacity-50 ${reviewComplete ? 'text-slate-400 cursor-default' : 'hover:bg-white hover:shadow-sm text-purple-700'}`}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded transition-all text-xs font-semibold disabled:opacity-50 ${reviewComplete ? 'text-slate-400' : 'hover:bg-white hover:shadow-sm text-purple-700'}`}
               title="Review entire document"
             >
               <Layers size={14} />
@@ -315,15 +406,13 @@ function App() {
 
           <label className="flex items-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md cursor-pointer text-sm font-medium">
             <Upload size={16} />
-            <span>Upload</span>
+            <span>New File</span>
             <input type="file" accept=".xml" onChange={handleFileUpload} className="hidden" />
           </label>
           
-          <button onClick={() => { const s = createSampleTEI(); setXmlDoc(parseXML(s)); setFileName("sample.xml"); setPageStatus({}); setHistory([s]); setHistoryIndex(0); setReviewComplete(false); }} className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md text-sm font-medium"><RefreshCcw size={16} /></button>
-
           <div className="w-px h-8 bg-slate-200 mx-1"></div>
 
-          <button onClick={handleDownload} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-sm text-sm font-medium">
+          <button onClick={handleDownload} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-sm text-sm font-medium transition-colors">
             <Download size={16} />
             <span>Export</span>
           </button>
@@ -331,33 +420,52 @@ function App() {
       </header>
 
       {suggestions.length > 0 && (
-         <div className="bg-slate-800 text-white px-6 py-2 flex items-center justify-between z-40">
+         <div className="bg-slate-800 text-white px-6 py-2 flex items-center justify-between z-40 shadow-inner">
              <div className="flex items-center gap-4">
                  <div className="flex items-center gap-2 text-sm font-medium">
-                     <AlertCircle size={16} className="text-red-400" />
-                     {suggestions.length} suggestions
+                     <AlertCircle size={16} className="text-amber-400" />
+                     {suggestions.length} suggestions found
                  </div>
                  <div className="flex items-center gap-1">
-                     <button onClick={() => setCurrentSuggestionIndex(p => (p - 1 + suggestions.length) % suggestions.length)} className="p-1 hover:bg-slate-700 rounded"><ArrowLeft size={16} /></button>
-                     <span className="text-xs text-slate-400 w-16 text-center">{currentSuggestionIndex + 1} / {suggestions.length}</span>
-                     <button onClick={() => setCurrentSuggestionIndex(p => (p + 1) % suggestions.length)} className="p-1 hover:bg-slate-700 rounded"><ArrowRight size={16} /></button>
+                     <button onClick={() => setCurrentSuggestionIndex(p => (p - 1 + suggestions.length) % suggestions.length)} className="p-1 hover:bg-slate-700 rounded transition-colors"><ArrowLeft size={16} /></button>
+                     <span className="text-xs text-slate-400 w-16 text-center font-mono">{currentSuggestionIndex + 1} / {suggestions.length}</span>
+                     <button onClick={() => setCurrentSuggestionIndex(p => (p + 1) % suggestions.length)} className="p-1 hover:bg-slate-700 rounded transition-colors"><ArrowRight size={16} /></button>
+                 </div>
+                 <div className="h-4 w-px bg-slate-600"></div>
+                 <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => handleAcceptAll('page')}
+                      className="flex items-center gap-1.5 px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xs font-bold transition-all shadow-lg active:scale-95"
+                    >
+                      <CheckCheck size={14} />
+                      Accept Page
+                    </button>
+                    <button 
+                      onClick={() => handleAcceptAll('document')}
+                      className="flex items-center gap-1.5 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold transition-all shadow-lg active:scale-95"
+                    >
+                      <Layers size={14} />
+                      Accept Full
+                    </button>
                  </div>
              </div>
-             <div className="text-xs text-slate-400">Review highlights: Green (Add), Yellow (Fix), Red (Remove)</div>
+             <div className="text-[10px] text-slate-400 uppercase tracking-widest font-bold hidden md:block">Highlights: Green (Add), Yellow (Fix), Red (Remove)</div>
          </div>
       )}
 
       <div className="flex flex-1 overflow-hidden">
         {pages.length > 0 && (
           <aside className="w-64 bg-white border-e border-slate-200 flex flex-col shrink-0 z-20 overflow-y-auto">
-            <div className="p-4 border-b bg-slate-50/50"><h3 className="font-semibold text-slate-700 text-xs uppercase">Pages ({pages.length})</h3></div>
+            <div className="p-4 border-b bg-slate-50/50 flex items-center justify-between">
+              <h3 className="font-semibold text-slate-700 text-xs uppercase">Navigation ({pages.length})</h3>
+            </div>
             <div className="p-2 space-y-1">
               {pages.map((page, idx) => {
                 const isDone = !!pageStatus[page.id];
                 const isActive = idx === activePageIndex;
                 return (
-                  <div key={page.id} className={`flex items-center gap-3 p-2 rounded-md cursor-pointer ${isActive ? 'bg-blue-50 border-blue-100 shadow-sm' : 'hover:bg-slate-50'}`} onClick={() => setActivePageIndex(idx)}>
-                     <button onClick={(e) => { e.stopPropagation(); togglePageStatus(page.id); }} className={`${isDone ? 'text-green-500' : 'text-slate-300'}`}>{isDone ? <CheckCircle size={18} /> : <Circle size={18} />}</button>
+                  <div key={page.id} className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-all ${isActive ? 'bg-blue-50 border-blue-100 shadow-sm' : 'hover:bg-slate-50'}`} onClick={() => setActivePageIndex(idx)}>
+                     <button onClick={(e) => { e.stopPropagation(); togglePageStatus(page.id); }} className={`${isDone ? 'text-green-500' : 'text-slate-300'} transition-colors hover:text-green-400`}>{isDone ? <CheckCircle size={18} /> : <Circle size={18} />}</button>
                      <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700'}`}>{page.id}</p>
                   </div>
                 );
@@ -369,31 +477,44 @@ function App() {
         <main ref={mainContentRef} className="flex-1 overflow-auto bg-slate-100/50 p-8">
           <div className="max-w-4xl mx-auto h-full flex flex-col">
             {errorMsg && (
-              <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-md flex items-start gap-3">
-                  <AlertCircle className="shrink-0 mt-0.5" size={20} />
-                  <div className="text-sm">
-                    <p className="font-bold">Review Error</p>
-                    <p className="opacity-90">{errorMsg}</p>
+              <div className="mb-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-md flex items-start justify-between gap-3 animate-in fade-in slide-in-from-top-2">
+                  <div className="flex gap-3">
+                    <AlertCircle className="shrink-0 mt-0.5" size={20} />
+                    <div className="text-sm">
+                      <p className="font-bold">AI Processing Encountered an Error</p>
+                      <p className="opacity-90">{errorMsg}</p>
+                    </div>
                   </div>
+                  <button 
+                    onClick={() => handleReview('page')}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded font-bold text-xs transition-colors shrink-0"
+                  >
+                    <RotateCw size={14} />
+                    Retry Page
+                  </button>
               </div>
             )}
             <div ref={containerRef} className={`relative font-serif text-lg leading-relaxed text-slate-800 ${direction === 'rtl' ? 'text-right' : 'text-left'} flex-1`}>
-              {xmlDoc ? (
-                pages.length > 0 ? (
-                  <div className="bg-white shadow-lg p-12 min-h-[800px] rounded-sm relative">
-                      <button onClick={handleResetPage} className="absolute top-4 end-4 p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded" title="Reset Page"><RotateCcw size={16} /></button>
-                      <XmlNodeRenderer node={pages[activePageIndex].node} path={pages[activePageIndex].path} onAction={handleAction} />
-                  </div>
-                ) : (
-                  <div className="bg-white shadow-lg p-12 min-h-screen rounded-sm"><XmlNodeRenderer node={xmlDoc.documentElement} path="" onAction={handleAction} /></div>
-                )
-              ) : <div className="text-center py-20 text-slate-400">No document loaded.</div>}
+              {xmlDoc && pages.length > 0 ? (
+                <div className="bg-white shadow-lg p-12 min-h-[800px] rounded-sm relative border border-slate-200">
+                    <div className="absolute top-4 end-4 flex items-center gap-2">
+                      <button onClick={handleResetPage} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors" title="Reset Page"><RotateCcw size={16} /></button>
+                    </div>
+                    <XmlNodeRenderer node={pages[activePageIndex].node} path={pages[activePageIndex].path} onAction={handleAction} />
+                </div>
+              ) : xmlDoc ? (
+                <div className="bg-white shadow-lg p-12 min-h-screen rounded-sm border border-slate-200">
+                  <XmlNodeRenderer node={xmlDoc.documentElement} path="" onAction={handleAction} />
+                </div>
+              ) : (
+                <div className="text-center py-20 text-slate-400">Ready for file input.</div>
+              )}
             </div>
             {pages.length > 0 && (
               <div className="flex items-center justify-between py-8 mt-4 border-t border-slate-200 sticky bottom-0 bg-slate-100/90 backdrop-blur-sm px-4 rounded-b-lg">
-                 <button onClick={() => setActivePageIndex(p => p - 1)} disabled={activePageIndex === 0} className="flex items-center gap-2 px-4 py-2 bg-white border rounded shadow-sm disabled:opacity-50"><ChevronLeft className="w-4 h-4 rtl:rotate-180" /><span>Prev</span></button>
-                 <span className="text-sm font-medium text-slate-500">Page {activePageIndex + 1} of {pages.length}</span>
-                 <button onClick={() => setActivePageIndex(p => p + 1)} disabled={activePageIndex === pages.length - 1} className="flex items-center gap-2 px-4 py-2 bg-white border rounded shadow-sm disabled:opacity-50"><span>Next</span><ChevronRight className="w-4 h-4 rtl:rotate-180" /></button>
+                 <button onClick={() => setActivePageIndex(p => p - 1)} disabled={activePageIndex === 0} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded shadow-sm disabled:opacity-50 transition-all active:scale-95"><ChevronLeft className="w-4 h-4 rtl:rotate-180" /><span>Previous</span></button>
+                 <span className="text-sm font-bold text-slate-500 bg-white px-4 py-1.5 rounded-full border border-slate-200 shadow-sm">Page {activePageIndex + 1} of {pages.length}</span>
+                 <button onClick={() => setActivePageIndex(p => p + 1)} disabled={activePageIndex === pages.length - 1} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded shadow-sm disabled:opacity-50 transition-all active:scale-95"><span>Next</span><ChevronRight className="w-4 h-4 rtl:rotate-180" /></button>
               </div>
             )}
           </div>
@@ -402,9 +523,9 @@ function App() {
 
       <FloatingMenu selection={selectionState} onTag={handleApplyTag} onAutoTag={handleAutoTagSelection} isAutoTagging={isProcessing} />
       {isProcessing && (
-        <div className="fixed bottom-8 right-8 bg-white border shadow-xl rounded-lg p-4 flex items-center gap-3 z-50 animate-in slide-in-from-bottom-5">
+        <div className="fixed bottom-8 right-8 bg-white border border-slate-200 shadow-2xl rounded-lg p-4 flex items-center gap-3 z-50 animate-in slide-in-from-bottom-5">
             <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-            <span className="text-sm font-medium text-slate-700">AI is working...</span>
+            <span className="text-sm font-bold text-slate-700">AI Analyst is working...</span>
         </div>
       )}
     </div>

@@ -1,7 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
 
-const apiKey = process.env.API_KEY || '';
-const ai = new GoogleGenAI({ apiKey });
+// Initialize the Google GenAI client with the API key from the environment variable directly.
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // Helper for exponential backoff
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -58,21 +58,33 @@ async function retryOperation<T>(operation: () => Promise<T>, retries: number = 
   throw lastError;
 }
 
-export const autoAnnotateText = async (text: string): Promise<string> => {
-  if (!apiKey) {
-    throw new Error("API Key is missing");
-  }
+const COMMON_RULES = `
+SPECIFIC ANNOTATION RULES (HEBREW HISTORICAL TEXTS):
+1. FORME WORK (<fw>): DO NOT annotate or modify anything inside <fw> tags. Leave them exactly as they are.
+2. NAMES OF GOD: Never annotate names of God (e.g., ה׳, אלקים, וכו׳).
+3. PREFIXES: The prefix 'ר׳' (Rebbe/Rav) should NOT be part of the annotation. Example: ר׳ <persName>משה</persName>.
+4. ISRAEL (ישראל):
+   - Reference to Jews/People/Nation (עם ישראל): DO NOT annotate.
+   - A single person named Israel: Annotate as <persName>.
+   - Land of Israel (ארץ ישראל): Annotate as <placeName>.
+   - Note: 'ישראל' alone is rarely a place name unless the context clearly refers to the Land of Israel (ארץ ישראל).
+5. MULTI-WORD PLACES: Annotate as a single tag. Example: <placeName>פראנקפורט דמיין</placeName>.
+6. NESTED NAMES: For expressions like 'נפתלי מסטמבול', tag the whole as <persName> and the location within as <placeName>.
+   Example: <persName>נפתלי מ<placeName>סטמבול</placeName></persName>.
+`;
 
+export const autoAnnotateText = async (text: string): Promise<string> => {
   const prompt = `
-    You are a TEI XML expert.
-    I will provide a text snippet. Identify Person Names, Place Names, and generic Proper Names.
+    You are a TEI XML expert specializing in Hebrew historical texts.
+    Identify Person Names, Place Names, and generic Proper Names.
     Wrap them in <persName>, <placeName>, and <name> tags respectively.
     
+    ${COMMON_RULES}
+
     Rules:
     1. Do NOT change any words, punctuation, or whitespace. Only add tags.
     2. Do NOT add a root element. Return only the tagged text fragment.
     3. If no entities found, return exactly as is.
-    4. Use 'persName' for people, 'placeName' for locations, 'name' for others.
 
     Text to annotate:
     "${text}"
@@ -89,26 +101,21 @@ export const autoAnnotateText = async (text: string): Promise<string> => {
 };
 
 export const reviewXmlFragment = async (xmlFragment: string, isFullDoc: boolean = false): Promise<string> => {
-  if (!apiKey) {
-    throw new Error("API Key is missing");
-  }
-
   const prompt = `
-    You are a TEI XML Editor.
-    I will provide an XML ${isFullDoc ? 'document' : 'fragment'}.
+    You are a TEI XML Editor specializing in Hebrew historical texts.
     Review annotations and suggest corrections using the <suggestion> tag.
     
+    ${COMMON_RULES}
+
     CATEGORIES OF SUGGESTIONS:
     1. ADDITION (mode="addition"): For entities NOT tagged.
-       Example: <suggestion mode="addition" type="placeName" reason="Paris is a city">Paris</suggestion>
-    2. CORRECTION (mode="correction"): For entities with WRONG tags.
-       Example: <suggestion mode="correction" type="persName" reason="John is a person"><placeName>John</placeName></suggestion>
-    3. DELETION (mode="deletion"): For tags applied to non-entities.
-       Example: <suggestion mode="deletion" reason="Not a name"><name>The</name></suggestion>
+    2. CORRECTION (mode="correction"): For entities with WRONG tags or tags including forbidden prefixes like 'ר׳'.
+    3. DELETION (mode="deletion"): For tags applied to non-entities (e.g., names of God, or 'Israel' referring to the people).
 
     INSTRUCTIONS:
     - DO NOT change the original text content at all.
-    - PRESERVE all existing structural tags exactly as they are.
+    - PRESERVE all existing structural tags (<div>, <p>, <fw>) exactly as they are. 
+    - VERY IMPORTANT: Do NOT add any tags inside <fw> elements.
     - RETURN THE FULL VALID XML ${isFullDoc ? 'DOCUMENT' : 'FRAGMENT'} with suggestion tags inserted.
     - The <suggestion> tag MUST include: mode ("addition", "correction", "deletion"), type (for add/corr), and reason.
     - IMPORTANT: Return ONLY the XML. No conversational text. No markdown blocks.

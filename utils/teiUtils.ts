@@ -108,12 +108,10 @@ export const acceptSuggestion = (doc: Document, path: string, payload: { mode: s
   const { mode, type } = payload;
 
   if (mode === 'deletion') {
-    // If it's a deletion suggestion, we want the text content but NO entity tags.
     const text = targetNode.textContent || "";
     const textNode = newDoc.createTextNode(text);
     parent.replaceChild(textNode, targetNode);
   } else {
-    // For addition or correction, we wrap/replace with the new type
     const newElement = newDoc.createElement(type);
     newElement.textContent = targetNode.textContent;
     parent.replaceChild(newElement, targetNode);
@@ -121,6 +119,32 @@ export const acceptSuggestion = (doc: Document, path: string, payload: { mode: s
 
   parent.normalize();
   return newDoc;
+};
+
+export const acceptAllSuggestionsInNode = (doc: Document, targetNode: Node): void => {
+  if (targetNode.nodeType !== Node.ELEMENT_NODE) return;
+  const element = targetNode as Element;
+  
+  // Get all suggestions inside this node
+  // We use querySelectorAll and iterate backwards to avoid issues with DOM changes
+  const suggestions = Array.from(element.querySelectorAll('suggestion'));
+  
+  for (let i = suggestions.length - 1; i >= 0; i--) {
+    const s = suggestions[i];
+    const mode = s.getAttribute('mode');
+    const type = s.getAttribute('type') || 'name';
+    const parent = s.parentNode;
+    if (!parent) continue;
+
+    if (mode === 'deletion') {
+      const textNode = doc.createTextNode(s.textContent || "");
+      parent.replaceChild(textNode, s);
+    } else {
+      const newEl = doc.createElement(type);
+      newEl.textContent = s.textContent;
+      parent.replaceChild(newEl, s);
+    }
+  }
 };
 
 export const declineSuggestion = (doc: Document, path: string): Document => {
@@ -172,7 +196,7 @@ export const createSampleTEI = (): string => {
 <TEI xmlns="http://www.tei-c.org/ns/1.0">
   <teiHeader>
     <fileDesc>
-      <titleStmt><title>Sample Document</title></titleStmt>
+      <titleStmt><title>Sample Hebrew Document</title></titleStmt>
       <publicationStmt><p>Demo</p></publicationStmt>
       <sourceDesc><p>Generated for demo</p></sourceDesc>
     </fileDesc>
@@ -180,20 +204,17 @@ export const createSampleTEI = (): string => {
   <text>
     <body>
       <div xml:id="page_01">
+        <fw type="header">Page 1 - Catchword</fw>
         <p>
-          During his stay in <placeName>London</placeName>, <persName>Sherlock Holmes</persName> often visited <placeName>Hyde Park</placeName>.
-          His companion, <persName>Dr. Watson</persName>, preferred the quiet of <placeName>Baker Street</placeName>.
+          מעשה שהיה ב<placeName>סטמבול</placeName> עם ר׳ <persName>נפתלי</persName>.
+          הוא שלח אגרת ל<persName>ישראל</persName> ב<placeName>ארץ ישראל</placeName>.
         </p>
       </div>
       <div xml:id="page_02">
+        <fw type="footer">Catchword: שם</fw>
         <p>
-          The mysterious letter was signed by a certain <name>Irene Adler</name>, who was known throughout <placeName>Europe</placeName>.
-          It mentioned a meeting at the <placeName>Langham Hotel</placeName>.
-        </p>
-      </div>
-      <div xml:id="page_03">
-        <p>
-          Select this text to test the auto-annotation feature. It mentions Albert Einstein visiting Berlin and meeting Max Planck.
+          שמעתי מפי ר׳ <persName>יצחק</persName> שגר ב<placeName>פראנקפורט דמיין</placeName>.
+          הוא אמר ש<name>ישראל</name> הם עם קדוש לה׳.
         </p>
       </div>
     </body>

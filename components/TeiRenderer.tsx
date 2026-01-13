@@ -20,13 +20,16 @@ export const XmlNodeRenderer: React.FC<XmlNodeProps> = ({ node, path, onAction }
     const tagName = element.tagName;
     const childNodes = Array.from(node.childNodes);
 
+    const isFw = tagName === 'fw';
+
     const children = childNodes.map((child, index) => {
       const childPath = path ? `${path}:${index}` : `${index}`;
+      // If we are inside an FW, we don't want to provide paths for manual annotation
       return (
         <XmlNodeRenderer 
           key={childPath} 
           node={child} 
-          path={childPath} 
+          path={isFw ? "" : childPath} 
           onAction={onAction} 
         />
       );
@@ -36,6 +39,17 @@ export const XmlNodeRenderer: React.FC<XmlNodeProps> = ({ node, path, onAction }
     const isPlace = tagName === 'placeName';
     const isName = tagName === 'name';
     const isSuggestion = tagName === 'suggestion';
+
+    if (isFw) {
+      return (
+        <span 
+          className="text-slate-400 opacity-60 italic text-sm select-none mx-1 font-sans"
+          title="Forme Work (Page Header/Footer/Catchword)"
+        >
+          {children}
+        </span>
+      );
+    }
 
     if (isSuggestion) {
       const mode = element.getAttribute('mode') || 'correction';
