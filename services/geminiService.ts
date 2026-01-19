@@ -63,14 +63,16 @@ SPECIFIC ANNOTATION RULES (HEBREW HISTORICAL TEXTS):
 1. FORME WORK (<fw>): DO NOT annotate or modify anything inside <fw> tags. Leave them exactly as they are.
 2. NAMES OF GOD: Never annotate names of God (e.g., ה׳, אלקים, וכו׳).
 3. PREFIXES: The prefix 'ר׳' (Rebbe/Rav) should NOT be part of the annotation. Example: ר׳ <persName>משה</persName>.
-4. ISRAEL (ישראל):
+4. HOLY CONGREGATION (ק״ק): The prefix 'ק״ק' (Kehilla Kedosha) should NOT be part of the placeName annotation. Example: ק״ק <placeName>סטמבול</placeName>.
+5. ISRAEL (ישראל):
    - Reference to Jews/People/Nation (עם ישראל): DO NOT annotate.
    - A single person named Israel: Annotate as <persName>.
    - Land of Israel (ארץ ישראל): Annotate as <placeName>.
    - Note: 'ישראל' alone is rarely a place name unless the context clearly refers to the Land of Israel (ארץ ישראל).
-5. MULTI-WORD PLACES: Annotate as a single tag. Example: <placeName>פראנקפורט דמיין</placeName>.
-6. NESTED NAMES: For expressions like 'נפתלי מסטמבול', tag the whole as <persName> and the location within as <placeName>.
+6. MULTI-WORD PLACES: Annotate as a single tag. Example: <placeName>פראנקפורט דמיין</placeName>.
+7. NESTED NAMES: For expressions like 'נפתלי מסטמבול', tag the whole as <persName> and the location within as <placeName>.
    Example: <persName>נפתלי מ<placeName>סטמבול</placeName></persName>.
+8. NO REDUNDANT TAGS: Never create nested tags of the same type (e.g., <persName><persName>...</persName></persName>). Always flatten redundant identical tags into a single layer.
 `;
 
 export const autoAnnotateText = async (text: string): Promise<string> => {
@@ -109,7 +111,7 @@ export const reviewXmlFragment = async (xmlFragment: string, isFullDoc: boolean 
 
     CATEGORIES OF SUGGESTIONS:
     1. ADDITION (mode="addition"): For entities NOT tagged.
-    2. CORRECTION (mode="correction"): For entities with WRONG tags or tags including forbidden prefixes like 'ר׳'.
+    2. CORRECTION (mode="correction"): For entities with WRONG tags, tags including forbidden prefixes like 'ר׳' or 'ק״ק', or redundant double tags like <persName><persName>...
     3. DELETION (mode="deletion"): For tags applied to non-entities (e.g., names of God, or 'Israel' referring to the people).
 
     INSTRUCTIONS:

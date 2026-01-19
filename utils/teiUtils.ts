@@ -42,11 +42,22 @@ export const wrapSelectionInTag = (
     const textNode = targetNode as Text;
     const textContent = textNode.textContent || "";
     
+    // Check if the parent is already an element of the same type wrapping this exact text
+    const parent = textNode.parentNode;
+    if (parent && parent.nodeType === Node.ELEMENT_NODE) {
+      const parentEl = parent as Element;
+      if (parentEl.tagName.toLowerCase() === tagName.toLowerCase() && 
+          parentEl.childNodes.length === 1 && 
+          startOffset === 0 && 
+          endOffset === textContent.length) {
+        return doc; // Skip redundant wrap
+      }
+    }
+
     const beforeText = textContent.substring(0, startOffset);
     const selectedText = textContent.substring(startOffset, endOffset);
     const afterText = textContent.substring(endOffset);
 
-    const parent = textNode.parentNode;
     if (!parent) return doc;
 
     const newElement = newDoc.createElement(tagName);
@@ -124,15 +135,12 @@ export const acceptSuggestion = (doc: Document, path: string, payload: { mode: s
   const { mode, type } = payload;
 
   if (mode === 'deletion') {
-    // If accepting a deletion, we also want to remove any entity tags that were inside the suggestion
-    // as those are the tags the AI is suggesting to remove.
     const children = Array.from(targetNode.childNodes);
     children.forEach(child => {
       if (child.nodeType === Node.ELEMENT_NODE) {
         const el = child as Element;
         const tag = el.tagName.toLowerCase();
         if (tag === 'persname' || tag === 'placename' || tag === 'name') {
-          // Unwrap the entity tag to leave its text content
           while (el.firstChild) {
             targetNode.insertBefore(el.firstChild, el);
           }
@@ -141,16 +149,23 @@ export const acceptSuggestion = (doc: Document, path: string, payload: { mode: s
       }
     });
 
-    // Now unwrap the suggestion wrapper itself
     while (targetNode.firstChild) {
       parent.insertBefore(targetNode.firstChild, targetNode);
     }
     parent.removeChild(targetNode);
   } else {
     const newElement = newDoc.createElement(type);
-    // Move all children from suggestion to the new element to preserve nested tags
     while (targetNode.firstChild) {
-      newElement.appendChild(targetNode.firstChild);
+      const child = targetNode.firstChild;
+      // Flatten redundant double tags: if child is the same tag type as the parent we are creating
+      if (child.nodeType === Node.ELEMENT_NODE && (child as Element).tagName.toLowerCase() === type.toLowerCase()) {
+         while (child.firstChild) {
+           newElement.appendChild(child.firstChild);
+         }
+         targetNode.removeChild(child);
+      } else {
+        newElement.appendChild(child);
+      }
     }
     parent.replaceChild(newElement, targetNode);
   }
@@ -173,7 +188,6 @@ export const acceptAllSuggestionsInNode = (doc: Document, targetNode: Node): voi
     if (!parent) continue;
 
     if (mode === 'deletion') {
-      // Remove entity tags inside the suggestion first
       const children = Array.from(s.childNodes);
       children.forEach(child => {
         if (child.nodeType === Node.ELEMENT_NODE) {
@@ -188,7 +202,6 @@ export const acceptAllSuggestionsInNode = (doc: Document, targetNode: Node): voi
         }
       });
 
-      // Unwrap suggestion
       while (s.firstChild) {
         parent.insertBefore(s.firstChild, s);
       }
@@ -196,7 +209,16 @@ export const acceptAllSuggestionsInNode = (doc: Document, targetNode: Node): voi
     } else {
       const newEl = doc.createElement(type);
       while (s.firstChild) {
-        newEl.appendChild(s.firstChild);
+        const child = s.firstChild;
+        // Redundant nesting check
+        if (child.nodeType === Node.ELEMENT_NODE && (child as Element).tagName.toLowerCase() === type.toLowerCase()) {
+           while (child.firstChild) {
+             newEl.appendChild(child.firstChild);
+           }
+           s.removeChild(child);
+        } else {
+          newEl.appendChild(child);
+        }
       }
       parent.replaceChild(newEl, s);
     }
@@ -264,6 +286,7 @@ export const createSampleTEI = (): string => {
         <p>
           מעשה שהיה ב<placeName>סטמבול</placeName> עם ר׳ <persName>נפתלי</persName>.
           הוא שלח אגרת ל<persName>ישראל</persName> ב<placeName>ארץ ישראל</placeName>.
+          בקהילת ק״ק <placeName>סטמבול</placeName> נפוצה השמועה.
         </p>
       </div>
       <div xml:id="page_02">
@@ -272,6 +295,7 @@ export const createSampleTEI = (): string => {
           שמעתי מפי ר׳ <persName>יצחק</persName> שגר ב<placeName>פראנקפורט דמיין</placeName>.
           הוא אמר ש<name>ישראל</name> הם עם קדוש לה׳.
           דוגמה לקינון: <persName>ר׳ <persName>משה</persName> מ<placeName>קורדוברו</placeName></persName>.
+          דוגמה ליתירות: <persName><persName>יעקב</persName></persName> אבינו.
         </p>
       </div>
     </body>
